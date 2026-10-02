@@ -1,0 +1,30 @@
+{
+	"name": "pi-multi-account",
+	"version": "1.0.0",
+	"description": "Multiple API accounts per provider for the pi coding agent — virtual providers with per-account keys, Alt+A cycling, and auto-switch on rate limits or failures.",
+	"type": "module",
+	"license": "MIT",
+	"keywords": [
+		"pi",
+		"pi-package",
+		"multi-account",
+		"providers",
+		"rate-limit"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/hakergeniusz/pi-multi-account.git"
+	},
+	"bugs": {
+		"url": "https://github.com/hakergeniusz/pi-multi-account/issues"
+	},
+	"homepage": "https://github.com/hakergeniusz/pi-multi-account#readme",
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	}
+}
