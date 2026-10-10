@@ -190,12 +190,15 @@ The active account index is persisted in the session, so it survives restarts.
 
 ## Auto-Switch on Failure
 
-When a request fails with a rate-limit, quota, auth, or server error, the extension automatically switches to the next account.
+When a request fails for **any reason** — rate limit, quota, auth, 404, 5xx,
+billing, or anything unclassified — the extension automatically switches to the
+next account and retries, until **every account in the group has been tried and
+failed**. Only then does the error surface.
 
 | Config field | Default | Description |
 |--------------|---------|-------------|
-| `autoSwitchOnFailure` | `true` | Auto-switch account on retryable failures |
-| `autoRetry` | `false` | Also auto-resend the last prompt after switching (only when no tools ran yet, to avoid duplicating tool actions) |
+| `autoSwitchOnFailure` | `true` | Auto-switch account on any failure |
+| `autoRetry` | `true` | Also auto-resend the last prompt after switching (only when no tools ran yet, to avoid duplicating tool actions) |
 
 Example:
 
@@ -209,10 +212,18 @@ Example:
 
 **How it works:**
 1. Assistant response ends with `stopReason: "error"`.
-2. The error message is checked against retryable patterns (429, rate limit, quota, 401/403, FreeTierError, overloaded, 5xx, billing, etc.).
-3. Context-overflow and user-abort errors are ignored (Pi handles compaction; aborts are intentional).
-4. The extension switches to the next account (same model) and notifies you.
-5. If `autoRetry` is on and no tools ran in the failed turn, the last prompt is automatically resent.
-6. Loop protection: after cycling through all accounts without success, it stops and warns that all accounts are exhausted. The counter resets on the next successful response.
+2. User-abort/cancel errors are the only ones skipped — rotating accounts
+cannot help when the user gave up. Everything else rotates, including errors
+that look fatal (a 404 on one key may just mean that key lacks access).
+3. The extension switches to the next account (same model) and notifies you.
+4. If `autoRetry` is not disabled and no tools ran in the failed turn, the last
+prompt is automatically resent — so rotation continues without interaction.
+5. Loop protection: after cycling through all accounts without success (N
+switches for N accounts), it stops, warns that all accounts are exhausted, and
+the original error surfaces. The counter resets on the next successful
+response.
+6. If tools already ran in the failed turn, the account still switches but the
+prompt is **not** auto-resent (resending would duplicate tool actions);
+resend manually and the fresh account is used.
 
 **Manual fallback:** press `Alt+A` or run `/account cycle` at any time.

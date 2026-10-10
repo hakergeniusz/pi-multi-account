@@ -56,7 +56,6 @@ const STATE_ENTRY_TYPE = "multi-account-state";
 let lastUserPrompt: string | undefined = undefined;
 let toolsUsedInTurn = false;
 let autoSwitchAttempts = 0;
-let lastAutoSwitchTime = 0;
 
 function loadConfig(cwd: string): MultiAccountConfig {
   const globalPath = join(getAgentDir(), "multi-account.json");
@@ -223,36 +222,15 @@ async function cycleToNextAccount(pi: ExtensionAPI, ctx: ExtensionContext): Prom
   }
 }
 
-const NON_RETRYABLE_PATTERNS = [
-  "context_length_exceeded", "context length", "context overflow",
-  "too many tokens", "maximum context", "context window",
-  "aborted", "cancelled", "canceled", "user aborted", "interrupted",
-  "invalid request", "bad request",
-];
-const RETRYABLE_PATTERNS = [
-  "429", "rate limit", "rate_limit", "ratelimit", "too many requests",
-  "quota", "exceeded", "insufficient", "out of credit", "no credits",
-  "out of budget", "insufficient_quota", "balance",
-  "401", "unauthorized", "invalid api key", "incorrect api key",
-  "invalid_api_key", "authentication", "invalid token", "expired token",
-  "403", "forbidden", "access denied",
-  "freetiererror", "freeusagelimiterror", "gousagelimiterror",
-  "monthly usage limit",
-  "overloaded", "capacity", "try again", "temporarily unavailable",
-  "service unavailable", "bad gateway", "gateway timeout",
-  "500", "502", "503", "504", "internal error",
-  "billing",
+/** Errors where rotating accounts cannot help: the user gave up. Everything
+ *  else — quota, auth, 404s, 5xx, even unclassified errors — rotates to the
+ *  next account, because another account may have access or capacity. */
+const ABORT_PATTERNS = [
+  "aborted", "cancelled", "canceled", "interrupted", "user abort",
 ];
 
-function isNonRetryableError(err: string): boolean {
-  for (const p of NON_RETRYABLE_PATTERNS) {
-    if (err.indexOf(p) >= 0) return true;
-  }
-  return false;
-}
-
-function isRetryableError(err: string): boolean {
-  for (const p of RETRYABLE_PATTERNS) {
+function isAbortLikeError(err: string): boolean {
+  for (const p of ABORT_PATTERNS) {
     if (err.indexOf(p) >= 0) return true;
   }
   return false;
@@ -439,12 +417,11 @@ export default function (pi: ExtensionAPI): void {
     if (msg.stopReason !== "error") return;
     if (config.autoSwitchOnFailure === false) return;
     if (accountGroups.size === 0) return;
-    const now = Date.now();
-    if (now - lastAutoSwitchTime < 2000) return;
     const err = (msg.errorMessage || "").toLowerCase();
     if (!err) return;
-    if (isNonRetryableError(err)) return;
-    if (!isRetryableError(err)) return;
+    // Rotate on every failure except user aborts — another account may have
+    // access or capacity even when this one's error looks fatal.
+    if (isAbortLikeError(err)) return;
     const model = ctx.model;
     if (!model) return;
     const group = findGroupByProvider(accountGroups, model.provider);
@@ -462,14 +439,16 @@ export default function (pi: ExtensionAPI): void {
     }
     const nextIdx = (currentIdx + 1) % group.accounts.length;
     const ok = await switchToAccount(pi, ctx, group, nextIdx);
-    lastAutoSwitchTime = now;
     if (!ok) return;
     activeAccountIndices.set(group.providerName, nextIdx);
     autoSwitchAttempts++;
     updateStatus(ctx, { provider: group.virtualProviderNames[nextIdx] });
     const failedLabel = group.accounts[currentIdx] ? group.accounts[currentIdx].label : ("Account " + (currentIdx + 1));
     const nextLabel = group.accounts[nextIdx] ? group.accounts[nextIdx].label : ("Account " + (nextIdx + 1));
-    if (config.autoRetry === true && lastUserPrompt && !toolsUsedInTurn) {
+    // Auto-retry unless explicitly disabled: the switched-to account re-runs
+    // the original prompt, so rotation continues without user interaction
+    // until every account in the group has been tried and failed.
+    if (config.autoRetry !== false && lastUserPrompt && !toolsUsedInTurn) {
       ctx.ui.notify("Multi-account: " + failedLabel + " failed (" + (msg.errorMessage || "error").slice(0, 80) + "). Switched to " + nextLabel + ", retrying...", "warning");
       pi.sendUserMessage(lastUserPrompt, { deliverAs: "followUp" });
     } else {
