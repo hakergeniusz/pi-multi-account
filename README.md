@@ -149,6 +149,74 @@ Both expose the same model `kimi-k2.6`. When you press `Alt+A`, pi switches from
 }
 ```
 
+## Example: OpenAI-Compatible Providers (Groq, Cohere, Poolside)
+
+Providers that speak the OpenAI-compatible API use `api: "openai-completions"`
+and a `baseUrl` that already carries the version path. The account keys are
+per-key env vars, so one virtual provider is registered per key:
+
+```json
+{
+  "providers": {
+    "groq": {
+      "name": "Groq",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "api": "openai-completions",
+      "accounts": [
+        { "label": "key1", "apiKey": "$GROQ_API_KEY_1" },
+        { "label": "key2", "apiKey": "$GROQ_API_KEY_2" }
+      ],
+      "models": [
+        {
+          "id": "openai/gpt-oss-120b",
+          "name": "GPT OSS 120B",
+          "reasoning": true,
+          "input": ["text"],
+          "cost": { "input": 0.15, "output": 0.6, "cacheRead": 0.075, "cacheWrite": 0 },
+          "contextWindow": 131072,
+          "maxTokens": 65536,
+          "thinkingLevelMap": {
+            "off": null, "minimal": null, "low": "low",
+            "medium": "medium", "high": "high", "xhigh": null, "max": null
+          }
+        }
+      ]
+    },
+    "cohere": {
+      "name": "Cohere",
+      "baseUrl": "https://api.cohere.com/compatibility/v1",
+      "api": "openai-completions",
+      "accounts": [
+        { "label": "key1", "apiKey": "$COHERE_API_KEY_1" }
+      ],
+      "models": [
+        {
+          "id": "command-a-03-2025",
+          "name": "Command A 03 2025",
+          "reasoning": false,
+          "input": ["text"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 288000,
+          "maxTokens": 8192
+        }
+      ]
+    }
+  }
+}
+```
+
+This registers `groq-key1`, `groq-key2`, `cohere-key1`, … each with its own key.
+
+Two provider-specific details worth knowing:
+
+- **max output tokens must match the provider's limit.** Cohere rejects a
+  request whose `max_tokens` exceeds the model's limit with a 400 that names
+  it ("max tokens must be less than or equal to 8192"). The limit is not in
+  the model catalog, so it has to be probed.
+- **Thinking levels map to the provider's values.** A model that only accepts
+  `reasoning_effort: "high"` needs every other level mapped to `null` in
+  `thinkingLevelMap`, or pi sends a level the provider rejects.
+
 ## Example: Dynamic Model Discovery
 
 If the provider supports a `/v1/models` endpoint, use `modelUrl` instead of listing models:
