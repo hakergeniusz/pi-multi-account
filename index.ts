@@ -180,6 +180,11 @@ async function switchToAccount(
   targetIndex: number
 ): Promise<boolean> {
   const currentModel = ctx.model;
+  // A virtual router model (pi-gemini-router, pi-poolside-router) owns the
+  // provider choice for every request it routes. Replacing the session model
+  // with a physical `provider-keyN` would drop the router and its ladder, so
+  // the switch is refused and the router keeps rotating on its own.
+  if (isVirtualRouterModel(currentModel)) return false;
   const currentModelId = currentModel ? currentModel.id : undefined;
   const targetProvider = group.virtualProviderNames[targetIndex];
   if (currentModelId) {
@@ -216,6 +221,11 @@ async function cycleToNextAccount(pi: ExtensionAPI, ctx: ExtensionContext): Prom
     activeAccountIndices.set(group.providerName, nextIdx);
     ctx.ui.notify("Switched " + group.providerLabel + ": " + group.accounts[currentIdx].label + " -> " + group.accounts[nextIdx].label, "info");
     updateStatus(ctx, { provider: group.virtualProviderNames[nextIdx] });
+  } else if (isVirtualRouterModel(currentModel)) {
+    ctx.ui.notify(
+      "Current model is a router — it picks the account per request and rotates on its own",
+      "info"
+    );
   } else {
     ctx.ui.notify("Failed to switch account", "error");
     updateStatus(ctx);
@@ -228,6 +238,21 @@ async function cycleToNextAccount(pi: ExtensionAPI, ctx: ExtensionContext): Prom
 const ABORT_PATTERNS = [
   "aborted", "cancelled", "canceled", "interrupted", "user abort",
 ];
+
+/** API id of virtual catalog entries. A virtual model is a router: it picks a
+ *  physical provider per request (pi-gemini-router, pi-poolside-router). */
+const VIRTUAL_MODEL_API = "pi-virtual";
+
+/** Whether the selected model is a virtual router model.
+ *
+ *  A router owns the provider choice for its own request. Swapping the
+ *  session model out from under it (pi.setModel on a physical
+ *  `provider-keyN`) would abandon the router and its ladder, so the router's
+ *  own failure handling is the only rotation that should run.
+ */
+function isVirtualRouterModel(model: { api?: string } | undefined): boolean {
+  return !!model && model.api === VIRTUAL_MODEL_API;
+}
 
 function isAbortLikeError(err: string): boolean {
   for (const p of ABORT_PATTERNS) {
@@ -424,6 +449,11 @@ export default function (pi: ExtensionAPI): void {
     if (isAbortLikeError(err)) return;
     const model = ctx.model;
     if (!model) return;
+    // A virtual router model (pi-gemini-router, pi-poolside-router) picks the
+    // physical provider per request and rotates keys on its own. Switching the
+    // session model here would drop the router and its ladder, so the router
+    // stays in charge of the failure.
+    if (isVirtualRouterModel(model)) return;
     const group = findGroupByProvider(accountGroups, model.provider);
     if (!group || group.accounts.length <= 1) return;
     let currentIdx: number;
@@ -532,6 +562,11 @@ export default function (pi: ExtensionAPI): void {
             activeAccountIndices.set(group.providerName, idx);
             ctx.ui.notify("Switched to " + group.accounts[idx].label, "info");
             updateStatus(ctx, { provider: group.virtualProviderNames[idx] });
+          } else if (isVirtualRouterModel(ctx.model)) {
+            ctx.ui.notify(
+              "Current model is a router — it picks the account per request and rotates on its own",
+              "info"
+            );
           } else {
             ctx.ui.notify("Failed to switch", "error");
             updateStatus(ctx);

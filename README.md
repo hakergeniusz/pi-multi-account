@@ -195,6 +195,14 @@ billing, or anything unclassified — the extension automatically switches to th
 next account and retries, until **every account in the group has been tried and
 failed**. Only then does the error surface.
 
+**Router models are left alone.** When the selected model is a virtual router
+(`api: "pi-virtual"`, e.g. `google/gemini-flash` from `pi-gemini-router` or
+`poolside/laguna-s` from `pi-poolside-router`), the router owns the account
+choice for every request it routes. Switching the session model to a physical
+`provider-keyN` would abandon the router and its ladder, so the switch is
+skipped and the router rotates on its own. The same applies to `/account cycle`,
+`Alt+A`, and `/account <label>`.
+
 | Config field | Default | Description |
 |--------------|---------|-------------|
 | `autoSwitchOnFailure` | `true` | Auto-switch account on any failure |
