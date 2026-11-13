@@ -232,12 +232,22 @@ async function cycleToNextAccount(pi: ExtensionAPI, ctx: ExtensionContext): Prom
   }
 }
 
-/** Errors where rotating accounts cannot help: the user gave up. Everything
- *  else — quota, auth, 404s, 5xx, even unclassified errors — rotates to the
- *  next account, because another account may have access or capacity. */
+/** Errors where rotating accounts cannot help: the user gave up, or the
+ *  failure is model/service-level — another key hits the exact same wall
+ *  (Google's 503 "high demand" is per model, not per project; so are gateway
+ *  5xx). Pi's own retry-with-backoff owns those on the same key; rotating
+ *  here just burns the ring and queues a follow-up retry per hop while the
+ *  user is typing, which hijacks their next message into the queue.
+ *
+ *  Word-bounded on purpose: quota bodies embed numbers like `limit: 250000`
+ *  (`500` is a substring of that!) and flash-lite's `limit: 500`, and quota
+ *  errors MUST still rotate. */
 const ABORT_PATTERNS = [
   "aborted", "cancelled", "canceled", "interrupted", "user abort",
 ];
+
+const SERVICE_LEVEL_PATTERN =
+  /\b(?:503|502|504)\b|unavailable|high demand|overloaded|internal server error/i;
 
 /** API id of virtual catalog entries. A virtual model is a router: it picks a
  *  physical provider per request (pi-gemini-router, pi-poolside-router). */
@@ -259,6 +269,11 @@ function isAbortLikeError(err: string): boolean {
     if (err.indexOf(p) >= 0) return true;
   }
   return false;
+}
+
+function isServiceLevelError(err: string): boolean {
+  // The handler lowercases the message before calling this.
+  return SERVICE_LEVEL_PATTERN.test(err);
 }
 
 function updateStatus(ctx: ExtensionContext, modelOverride?: { provider: string }): void {
@@ -444,9 +459,11 @@ export default function (pi: ExtensionAPI): void {
     if (accountGroups.size === 0) return;
     const err = (msg.errorMessage || "").toLowerCase();
     if (!err) return;
-    // Rotate on every failure except user aborts — another account may have
-    // access or capacity even when this one's error looks fatal.
+    // Rotate on every failure except user aborts and service-level errors —
+    // another account may have access or capacity even when this one's error
+    // looks fatal, but no account can serve a 503 "high demand".
     if (isAbortLikeError(err)) return;
+    if (isServiceLevelError(err)) return;
     const model = ctx.model;
     if (!model) return;
     // A virtual router model (pi-gemini-router, pi-poolside-router) picks the
