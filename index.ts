@@ -53,9 +53,15 @@ let config: MultiAccountConfig = { providers: {} };
 let accountGroups = new Map<string, AccountGroup>();
 let activeAccountIndices = new Map<string, number>();
 const STATE_ENTRY_TYPE = "multi-account-state";
-let lastUserPrompt: string | undefined = undefined;
-let toolsUsedInTurn = false;
 let autoSwitchAttempts = 0;
+/**
+ * A switch waiting to continue the interrupted task. Set (without the entry id)
+ * by `message_end` right after switching accounts, filled with the failed
+ * assistant entry id by `turn_end`, consumed by `agent_before_settle`, which
+ * removes the failed entry and keeps the agent loop running on the new
+ * account — mid-task switches no longer need the user to resend anything.
+ */
+let pendingContinue: { entryId: string | null; from: string; to: string } | undefined = undefined;
 
 function loadConfig(cwd: string): MultiAccountConfig {
   const globalPath = join(getAgentDir(), "multi-account.json");
@@ -77,6 +83,10 @@ function loadConfig(cwd: string): MultiAccountConfig {
     }
   }
   return {
+    // Carry the scalar knobs (autoSwitchOnFailure, autoRetry, …) from either
+    // file; project values win.
+    ...globalConfig,
+    ...projectConfig,
     providers: { ...globalConfig.providers, ...projectConfig.providers },
     cycleShortcut: projectConfig.cycleShortcut || globalConfig.cycleShortcut || "alt+a",
   };
@@ -418,6 +428,9 @@ export default function (pi: ExtensionAPI): void {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    // Reload so config edits (autoRetry, cycleShortcut, …) apply from the next
+    // session without restarting pi.
+    config = loadConfig(ctx.cwd);
     accountGroups = buildAccountGroups(pi, ctx.cwd);
     restoreState(ctx);
     updateStatus(ctx);
@@ -438,13 +451,11 @@ export default function (pi: ExtensionAPI): void {
     updateStatus(ctx, event.model);
   });
 
-  pi.on("before_agent_start", async (event) => {
-    lastUserPrompt = event.prompt;
-    toolsUsedInTurn = false;
-  });
-
-  pi.on("tool_execution_start", async () => {
-    toolsUsedInTurn = true;
+  pi.on("before_agent_start", async () => {
+    // A fresh user prompt starts a fresh switch budget and drops any stale
+    // continue from a previous run.
+    pendingContinue = undefined;
+    autoSwitchAttempts = 0;
   });
 
   pi.on("message_end", async (event, ctx) => {
@@ -492,15 +503,49 @@ export default function (pi: ExtensionAPI): void {
     updateStatus(ctx, { provider: group.virtualProviderNames[nextIdx] });
     const failedLabel = group.accounts[currentIdx] ? group.accounts[currentIdx].label : ("Account " + (currentIdx + 1));
     const nextLabel = group.accounts[nextIdx] ? group.accounts[nextIdx].label : ("Account " + (nextIdx + 1));
-    // Auto-retry unless explicitly disabled: the switched-to account re-runs
-    // the original prompt, so rotation continues without user interaction
-    // until every account in the group has been tried and failed.
-    if (config.autoRetry !== false && lastUserPrompt && !toolsUsedInTurn) {
-      ctx.ui.notify("Multi-account: " + failedLabel + " failed (" + (msg.errorMessage || "error").slice(0, 80) + "). Switched to " + nextLabel + ", retrying...", "warning");
-      pi.sendUserMessage(lastUserPrompt, { deliverAs: "followUp" });
+    // Continue the interrupted task on the new account unless explicitly
+    // disabled: `agent_before_settle` drops the failed assistant entry and
+    // keeps the agent loop running, so rotation continues without user
+    // interaction even when tools have already run this turn.
+    if (config.autoRetry !== false) {
+      ctx.ui.notify("Multi-account: " + failedLabel + " failed (" + (msg.errorMessage || "error").slice(0, 80) + "). Switched to " + nextLabel + " — continuing the task on it.", "warning");
+      pendingContinue = { entryId: null, from: failedLabel, to: nextLabel };
     } else {
       ctx.ui.notify("Multi-account: " + failedLabel + " failed. Auto-switched to " + nextLabel + ". Resend your message to retry.", "warning");
     }
+  });
+
+  // The errored assistant entry is only addressable here (message_end has no
+  // entry id); attach it to the pending continue so the settle handler can
+  // remove exactly that entry.
+  pi.on("turn_end", async (event) => {
+    if (!pendingContinue || pendingContinue.entryId) return;
+    if (event.outcome !== "error") return;
+    const msg = event.message as { role?: string; stopReason?: string };
+    if (msg.role !== "assistant" || msg.stopReason !== "error") return;
+    pendingContinue.entryId = event.messageEntryId;
+    return undefined;
+  });
+
+  // Pi never retries quota/billing errors on its own, so the run would just
+  // settle on the failed account. Take over at the settle boundary: remove the
+  // failed assistant attempt and ask for one more request — the session model
+  // already points at the switched-to account (pi.setModel mutates
+  // agent.state.model, which the next request reads).
+  pi.on("agent_before_settle", async (event) => {
+    const pending = pendingContinue;
+    if (!pending) return undefined;
+    pendingContinue = undefined;
+    if (event.outcome !== "error") return undefined;
+    const targetPresent = pending.entryId
+      ? event.context.contextEntries.some((entry) => entry.sourceEntry.id === pending.entryId)
+      : false;
+    if (!targetPresent && !event.context.canContinue) return undefined;
+    // The failed attempt must leave the context, or the retry repeats it.
+    const entries = targetPresent
+      ? [{ type: "context_edit" as const, targetId: pending.entryId!, replacement: null }]
+      : [];
+    return { entries, continue: true };
   });
 
   pi.on("before_provider_headers", (event, ctx) => {

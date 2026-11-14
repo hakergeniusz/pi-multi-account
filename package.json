@@ -1,6 +1,6 @@
 {
  "name": "pi-multi-account",
- "version": "1.1.0",
+ "version": "1.2.0",
  "description": "Multiple API accounts per provider for the pi coding agent \u2014 virtual providers with per-account keys, Alt+A cycling, and auto-switch on rate limits or failures.",
  "type": "module",
  "license": "MIT",

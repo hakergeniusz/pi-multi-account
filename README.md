@@ -274,7 +274,7 @@ skipped and the router rotates on its own. The same applies to `/account cycle`,
 | Config field | Default | Description |
 |--------------|---------|-------------|
 | `autoSwitchOnFailure` | `true` | Auto-switch account on any failure |
-| `autoRetry` | `true` | Also auto-resend the last prompt after switching (only when no tools ran yet, to avoid duplicating tool actions) |
+| `autoRetry` | `true` | Continue the interrupted task on the new account after switching |
 
 Example:
 
@@ -288,18 +288,20 @@ Example:
 
 **How it works:**
 1. Assistant response ends with `stopReason: "error"`.
-2. User-abort/cancel errors are the only ones skipped — rotating accounts
-cannot help when the user gave up. Everything else rotates, including errors
-that look fatal (a 404 on one key may just mean that key lacks access).
+2. User-abort/cancel errors are skipped — rotating accounts cannot help when
+the user gave up. Service-level errors (503 high demand / overloaded /
+internal server error) are also skipped — pi retries those on the same key.
+Everything else rotates, including errors that look fatal (a 404 on one key
+may just mean that key lacks access).
 3. The extension switches to the next account (same model) and notifies you.
-4. If `autoRetry` is not disabled and no tools ran in the failed turn, the last
-prompt is automatically resent — so rotation continues without interaction.
+4. If `autoRetry` is not disabled, the failed assistant attempt is removed
+from context at pi's settle boundary and the agent loop continues on the new
+account — mid-task, with tools already run, without any user interaction and
+without re-sending the prompt (pi would otherwise just settle on the error,
+since it never retries quota/billing errors itself).
 5. Loop protection: after cycling through all accounts without success (N
-switches for N accounts), it stops, warns that all accounts are exhausted, and
-the original error surfaces. The counter resets on the next successful
-response.
-6. If tools already ran in the failed turn, the account still switches but the
-prompt is **not** auto-resent (resending would duplicate tool actions);
-resend manually and the fresh account is used.
+switches for N accounts within one prompt), it stops, warns that all accounts
+are exhausted, and the original error surfaces. The budget resets on the next
+prompt and on every successful response.
 
 **Manual fallback:** press `Alt+A` or run `/account cycle` at any time.
